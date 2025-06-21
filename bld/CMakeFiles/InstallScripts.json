@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Repos/Slurm/bld/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

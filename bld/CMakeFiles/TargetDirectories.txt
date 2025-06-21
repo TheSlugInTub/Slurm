@@ -1,0 +1,3 @@
+D:/Repos/Slurm/bld/CMakeFiles/Slurm.dir
+D:/Repos/Slurm/bld/CMakeFiles/ALL_BUILD.dir
+D:/Repos/Slurm/bld/CMakeFiles/ZERO_CHECK.dir

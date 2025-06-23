@@ -43,11 +43,11 @@ typedef struct _RESIZE_PSEUDO_CONSOLE_BUFFER
     SHORT SizeY;
 } RESIZE_PSEUDO_CONSOLE_BUFFER;
 
-inline NTSTATUS
-WINAPI
-CreateHandle(PHANDLE FileHandle, PWSTR Buffer,
-             ACCESS_MASK DesiredAccess, HANDLE RootDirectory,
-             BOOLEAN IsInheritable, ULONG OpenOptions)
+inline NTSTATUS WINAPI CreateHandle(PHANDLE FileHandle, PWSTR Buffer,
+                                    ACCESS_MASK DesiredAccess,
+                                    HANDLE      RootDirectory,
+                                    BOOLEAN     IsInheritable,
+                                    ULONG       OpenOptions)
 {
     IO_STATUS_BLOCK IoStatusBlock;
     ULONG           Attributes = OBJ_CASE_INSENSITIVE;
@@ -97,7 +97,7 @@ class Terminal
         assert(bRes != 0);
 
         Status = CreateHandle(&hConServer,
-                              (LPWSTR) "\\Device\\ConDrv\\Server",
+                              (LPWSTR)L"\\Device\\ConDrv\\Server",
                               GENERIC_ALL, NULL, TRUE, 0);
 
         std::cout << "Status: " << Status << '\n';
@@ -120,9 +120,9 @@ class Terminal
         assert(bRes != 0);
 
         PWSTR InheritCursor =
-            (LPWSTR) "--inheritcursor "; /* Requires one space */
+            (LPWSTR)L"--inheritcursor "; /* Requires one space */
         if (!(dwFlags & PSEUDOCONSOLE_INHERIT_CURSOR))
-            InheritCursor = (LPWSTR) "";
+            InheritCursor = (LPWSTR)L"";
 
         wchar_t ConHostCommand[MAX_PATH];
 
@@ -131,9 +131,13 @@ class Terminal
         L"\\\\?\\%s\\system32\\conhost.exe %s--width %hu --height " \
         L"%hu --signal 0x%x --server 0x%x"
 
-        swprintf_s(ConHostCommand, MAX_PATH, COMMAND_FORMAT,
-                   RtlGetNtSystemRoot(), InheritCursor, size.X,
-                   size.Y, HandleToULong(ReadPipeHandle),
+        wchar_t winDir[MAX_PATH];
+        GetWindowsDirectoryW(winDir, MAX_PATH);
+        swprintf_s(ConHostCommand, MAX_PATH,
+                   L"\"%s\\system32\\conhost.exe\" %s--width %hu "
+                   L"--height %hu --signal 0x%x --server 0x%x",
+                   winDir, InheritCursor, size.X, size.Y,
+                   HandleToULong(ReadPipeHandle),
                    HandleToULong(hConServer));
 
         /* Initialize thread attribute list */
@@ -171,17 +175,19 @@ class Terminal
         assert(bRes != 0);
 
         Status = CreateHandle(
-            &hConReference, (LPWSTR) "\\Reference",
+            &hConReference, (LPWSTR)L"\\Reference",
             GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE, hConServer,
             FALSE, FILE_SYNCHRONOUS_IO_NONALERT);
         assert(Status == 0);
 
         /* Return handles to caller */
-        HPCON_INTERNAL* consoleHandle = (HPCON_INTERNAL*)HeapAlloc(
-            GetProcessHeap(), 0, sizeof(*consoleHandle));
-        consoleHandle->hWritePipe = WritePipeHandle;
-        consoleHandle->hConDrvReference = hConReference;
-        consoleHandle->hConHostProcess = ProcInfo.hProcess;
+        HPCON_INTERNAL* consoleHandleInt = (HPCON_INTERNAL*)HeapAlloc(
+            GetProcessHeap(), 0, sizeof(*consoleHandleInt));
+        consoleHandleInt->hWritePipe = WritePipeHandle;
+        consoleHandleInt->hConDrvReference = hConReference;
+        consoleHandleInt->hConHostProcess = ProcInfo.hProcess;
+
+        consoleHandle = consoleHandleInt;
 
         /* Cleanup */
         HeapFree(GetProcessHeap(), 0, AttrList);

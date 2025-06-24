@@ -105,9 +105,8 @@ class Terminal
         assert(Status == 0);
 
         HANDLE              ReadPipeHandle, WritePipeHandle;
-        SECURITY_ATTRIBUTES PipeAttributes;
-        memset(&PipeAttributes, 0, sizeof PipeAttributes);
-        PipeAttributes.bInheritHandle = FALSE;
+        SECURITY_ATTRIBUTES PipeAttributes = {};
+        PipeAttributes.bInheritHandle = TRUE;
         PipeAttributes.lpSecurityDescriptor = NULL;
         PipeAttributes.nLength = sizeof PipeAttributes;
 
@@ -223,23 +222,23 @@ class Terminal
     {
         DWORD ExitCode;
 
-        HPCON_INTERNAL* consoleHandle =
+        HPCON_INTERNAL* internal =
             (HPCON_INTERNAL*)consoleHandle;
 
-        CloseHandle(consoleHandle->hWritePipe);
+        CloseHandle(internal->hWritePipe);
 
-        if (GetExitCodeProcess(consoleHandle->hConHostProcess,
+        if (GetExitCodeProcess(internal->hConHostProcess,
                                &ExitCode) &&
             ExitCode == STILL_ACTIVE)
         {
-            WaitForSingleObject(consoleHandle->hConHostProcess,
+            WaitForSingleObject(internal->hConHostProcess,
                                 INFINITE);
         }
 
-        TerminateProcess(consoleHandle->hConHostProcess, 0);
+        TerminateProcess(internal->hConHostProcess, 0);
 
-        CloseHandle(consoleHandle->hConDrvReference);
-        HeapFree(GetProcessHeap(), 0, consoleHandle);
+        CloseHandle(internal->hConDrvReference);
+        HeapFree(GetProcessHeap(), 0, internal);
     }
 };
 

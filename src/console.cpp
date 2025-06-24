@@ -4,6 +4,8 @@
 #include <vector>
 #include <fstream>
 #include <curses.h>
+#include <mutex>
+#include <thread>
 #include "../include/ptymanager.hpp"
 
 #ifdef _WIN32
@@ -19,12 +21,21 @@
 
 struct Vec2
 {
-    int x = 0.0f, y = 0.0f;
+    int x = 0, y = 0;
 };
 
 Vec2 terminalSize;
 
 std::filesystem::path currentPath;
+
+static std::mutex  outMutex;
+static std::string outputBuffer;
+std::atomic<bool>  done {false};
+
+HANDLE hPipeIn = NULL, hPipeOut;
+HANDLE hPipePTYIn, hPipePTYOut;
+
+Terminal terminal;
 
 void StartProgram()
 {
@@ -38,6 +49,7 @@ void StartProgram()
         init_pair(1, COLOR_GREEN, COLOR_BLACK);  // For prompt
         init_pair(2, COLOR_YELLOW, COLOR_BLACK); // For directory
         init_pair(3, COLOR_RED, COLOR_BLACK);    // For errors
+        init_pair(4, COLOR_WHITE, COLOR_BLACK);  // For errors
     }
 
     // Configure ncurses
@@ -50,83 +62,95 @@ void StartProgram()
     getmaxyx(stdscr, terminalSize.y, terminalSize.x);
 
     // Display welcome message
-    if (has_colors())
-    {
-        attron(COLOR_PAIR(1));
-        printw("Slurm 1.0\n");
-        attroff(COLOR_PAIR(1));
-    }
-    else
-    {
-        printw("Slurm 1.0\n");
-    }
+    attron(COLOR_PAIR(1));
+    printw("Slurm 1.0\n");
+    attroff(COLOR_PAIR(1));
 
     refresh();
-}
-
-std::string GetInput(const std::string& prompt)
-{
-    printw("%s", prompt.c_str());
-    refresh();
-
-    std::string input;
-    int         ch;
-    int         startY, startX;
-    getyx(stdscr, startY, startX);
-
-    while ((ch = getch()) != '\n' && ch != '\r')
-    {
-        if (ch == ERR)
-        {
-            // No input available, continue
-            continue;
-        }
-        else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8)
-        {
-            // Handle backspace
-            if (!input.empty())
-            {
-                input.pop_back();
-                int y, x;
-                getyx(stdscr, y, x);
-                if (x > startX)
-                {
-                    mvaddch(y, x - 1, ' ');
-                    move(y, x - 1);
-                }
-                refresh();
-            }
-        }
-        else if (ch >= 32 && ch <= 126)
-        {
-            // Printable character
-            input += static_cast<char>(ch);
-            addch(ch);
-            refresh();
-        }
-    }
-
-    addch('\n');
-    refresh();
-    return input;
 }
 
 #define BUFF_SIZE 0x200
 
-DWORD WINAPI PipeListener(HANDLE hPipeIn)
+void PipeListener()
 {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     char   szBuffer[BUFF_SIZE];
-    DWORD  dwBytesWritten, dwBytesRead;
+    DWORD  dwBytesWritten, dwBytesRead, dwAvailable;
 
-    while (ReadFile(hPipeIn, szBuffer, BUFF_SIZE, &dwBytesRead, NULL))
+    int loopCount = 0;
+    while (true)
     {
-        if (dwBytesRead == 0)
-            break;
-        WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
-                  NULL);
+        loopCount++;
+
+        // Check if data is available to read
+        if (PeekNamedPipe(hPipeIn, NULL, 0, NULL, &dwAvailable, NULL))
+        {
+            if (loopCount % 100 == 0)
+            { 
+                printw("Loop %d: PeekNamedPipe succeeded, "
+                       "dwAvailable: %lu\n",
+                       loopCount, dwAvailable);
+                refresh();
+            }
+
+            if (dwAvailable > 0)
+            {
+                printw("first.\n");
+                refresh();
+
+                if (ReadFile(hPipeIn, szBuffer, BUFF_SIZE - 1,
+                             &dwBytesRead, NULL))
+                {
+                    printw("second\n");
+                    refresh();
+
+                    if (dwBytesRead == 0)
+                        break;
+
+                    szBuffer[dwBytesRead] =
+                        '\0';
+
+                    printw(szBuffer);
+                    refresh();
+
+                    WriteFile(hConsole, szBuffer, dwBytesRead,
+                              &dwBytesWritten, NULL);
+                }
+                else
+                {
+                    // ReadFile failed
+                    DWORD error = GetLastError();
+                    if (error == ERROR_BROKEN_PIPE ||
+                        error == ERROR_PIPE_NOT_CONNECTED)
+                        break;
+                }
+            }
+            else
+            {
+                // No data available, sleep briefly to avoid busy
+                // waiting
+                Sleep(10);
+            }
+        }
+        else
+        {
+            printw("ERROR: DATA IS UNAVAILABLE TO READ FROM PIPE.");
+            refresh();
+
+            DWORD error = GetLastError();
+            if (error == ERROR_BROKEN_PIPE ||
+                error == ERROR_PIPE_NOT_CONNECTED)
+            {
+                printw("FATAL ERROR: BROKEN PIPE OR PIPE NOT "
+                       "CONNECTED. SHUTTING DOWN LISTENERS. PREPARE "
+                       "FOR MELTDOWN.\n");
+                refresh();
+                break;
+            }
+
+            Sleep(10);
+        }
     }
-    return TRUE;
 }
 
 int main(int argc, char** argv)
@@ -134,25 +158,18 @@ int main(int argc, char** argv)
     currentPath = std::filesystem::current_path();
     std::string input;
 
-    Terminal terminal;
-
     StartProgram();
-
-    // while (true)
-    // {
-
-    //     // Update terminal size in case window was resized
-    //     getmaxyx(stdscr, terminalSize.y, terminalSize.x);
-    // }
 
     BOOL bRes;
 
-    HANDLE hPipeIn = NULL, hPipeOut;
-    HANDLE hPipePTYIn, hPipePTYOut;
+    SECURITY_ATTRIBUTES attributes = {};
+    attributes.nLength = sizeof(SECURITY_ATTRIBUTES);
+    attributes.lpSecurityDescriptor = NULL;
+    attributes.bInheritHandle = TRUE;  // This makes the pipe handles inheritable
 
     /* Create the pipes to which the ConPTY will connect */
-    if (CreatePipe(&hPipePTYIn, &hPipeOut, NULL, 0) &&
-        CreatePipe(&hPipeIn, &hPipePTYOut, NULL, 0))
+    if (CreatePipe(&hPipePTYIn, &hPipeOut, &attributes, 0) &&
+        CreatePipe(&hPipeIn, &hPipePTYOut, &attributes, 0))
     {
         /* Create the Pseudo Console attached to the PTY-end of the
          * pipes */
@@ -167,19 +184,10 @@ int main(int argc, char** argv)
                 csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
         }
 
-        terminal.InitializeConsole(consoleSize, hPipePTYIn,
+        terminal.InitializeConsole(consoleSize, hPipeOut,
                                    hPipePTYOut, 0);
 
-        assert(bRes == 0);
-
-        CloseHandle(hPipePTYOut);
-        CloseHandle(hPipePTYIn);
     }
-
-    /* Create & start thread to write */
-    HANDLE hThread =
-        CreateThread(NULL, 0, PipeListener, hPipeIn, 0, NULL);
-    assert(hThread != INVALID_HANDLE_VALUE);
 
     /* Initialize thread attribute */
     size_t                       AttrSize;
@@ -193,26 +201,27 @@ int main(int argc, char** argv)
     bRes = UpdateProcThreadAttribute(
         AttrList, 0,
         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, /* 0x20016u */
-        terminal.consoleHandle, sizeof terminal.consoleHandle, NULL, NULL);
+        terminal.consoleHandle, sizeof terminal.consoleHandle, NULL,
+        NULL);
     assert(bRes != 0);
 
     /* Initialize startup info struct */
-    PROCESS_INFORMATION ProcInfo;
-    memset(&ProcInfo, 0, sizeof ProcInfo);
+    PROCESS_INFORMATION ProcInfo = {};
     STARTUPINFOEXW SInfoEx;
     memset(&SInfoEx, 0, sizeof SInfoEx);
     SInfoEx.StartupInfo.cb = sizeof SInfoEx;
     SInfoEx.lpAttributeList = AttrList;
 
-    wchar_t Command[] = L"cmd.exe";
+    wchar_t Command[] = L"cmd /c echo Hello World";
 
     bRes = CreateProcessW(NULL, Command, NULL, NULL, FALSE,
                           EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
                           &SInfoEx.StartupInfo, &ProcInfo);
     assert(bRes != 0);
+    
+    std::thread listenerThread(PipeListener);
 
-    if (bRes)
-        WaitForSingleObject(ProcInfo.hThread, INFINITE);
+    while (1) {}
 
     /* Cleanup */
     CloseHandle(ProcInfo.hThread);
@@ -221,6 +230,9 @@ int main(int argc, char** argv)
     terminal.CloseConsole();
     CloseHandle(hPipeOut);
     CloseHandle(hPipeIn);
+    CloseHandle(hPipePTYOut);
+    CloseHandle(hPipePTYIn);
+    listenerThread.join();
 
     return 0;
 }

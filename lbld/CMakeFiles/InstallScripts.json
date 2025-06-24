@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/mnt/d/Repos/Slurm/lbld/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

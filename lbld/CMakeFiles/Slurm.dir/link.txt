@@ -1,1 +1,0 @@
-/usr/sbin/c++ -Wl,--dependency-file=CMakeFiles/Slurm.dir/link.d CMakeFiles/Slurm.dir/src/main.cpp.o -o Slurm  -lncursesw

@@ -1,8 +1,0 @@
-[
-{
-  "directory": "/mnt/d/Repos/Slurm/lbld",
-  "command": "/usr/sbin/c++  -I/mnt/d/Repos/Slurm/include -std=gnu++20 -o CMakeFiles/Slurm.dir/src/main.cpp.o -c /mnt/d/Repos/Slurm/src/main.cpp",
-  "file": "/mnt/d/Repos/Slurm/src/main.cpp",
-  "output": "CMakeFiles/Slurm.dir/src/main.cpp.o"
-}
-]

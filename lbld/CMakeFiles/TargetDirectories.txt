@@ -1,3 +1,0 @@
-/mnt/d/Repos/Slurm/lbld/CMakeFiles/Slurm.dir
-/mnt/d/Repos/Slurm/lbld/CMakeFiles/edit_cache.dir
-/mnt/d/Repos/Slurm/lbld/CMakeFiles/rebuild_cache.dir

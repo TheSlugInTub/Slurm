@@ -6,68 +6,50 @@
 struct Vec2
 {
     int x, y;
+
+    Vec2(int x, int y) : x(x), y(y) {}
+    Vec2() : x(0.0f), y(0.0f) {}
 };
 
 Vec2 terminalSize;
 
-void StartProgram()
+// ANSI escape code functions
+void ClearScreen()
 {
-    // Initialize ncurses
-    initscr();
-
-    // Check if colors are supported
-    if (has_colors())
-    {
-        start_color();
-        init_pair(1, COLOR_GREEN, COLOR_BLACK);  // For prompt
-        init_pair(2, COLOR_YELLOW, COLOR_BLACK); // For directory
-        init_pair(3, COLOR_RED, COLOR_BLACK);    // For errors
-    }
-
-    // Configure ncurses
-    keypad(stdscr, TRUE);   // Enable special keys
-    noecho();               // Don't echo input automatically
-    cbreak();               // Disable line buffering
-    nodelay(stdscr, FALSE); // Make getch() blocking
-
-    // Get terminal size
-    getmaxyx(stdscr, terminalSize.y, terminalSize.x);
-
-    // Display welcome message
-    if (has_colors())
-    {
-        attron(COLOR_PAIR(1));
-        printw("Slurm 1.0\n");
-        attroff(COLOR_PAIR(1));
-    }
-    else
-    {
-        printw("Slurm 1.0\n");
-    }
-
-    refresh();
+    printf("\x1b[2J\x1b[H");
 }
 
-
-std::string StripAnsi(const char* input, DWORD len)
+void MoveCursor(int row, int col)
 {
-    std::string output = {};
-
-    for (int i = 0; i < len; i++)
-    {
-        if (isalnum(input[i]) ||
-            (input[i] == '\n' || input[i] == ' '))
-        {
-            output.append(1, input[i]);
-        }
-    }
-
-    return output;
+    printf("\x1b[%d;%dH", row, col);
 }
+
+void SetColor(int fg, int bg = 40)
+{
+    printf("\x1b[%d;%dm", fg, bg);
+}
+
+void ResetColor()
+{
+    printf("\x1b[0m");
+}
+
+Vec2 GetTerminalSize(HANDLE hConsole)
+{
+    CONSOLE_SCREEN_BUFFER_INFO csbi {};
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    return Vec2(csbi.srWindow.Right - csbi.srWindow.Left + 1,
+                csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+}
+
 void __cdecl PipeListener(LPVOID);
 void __cdecl InputSender(LPVOID);
+void __cdecl StatusDrawer(LPVOID);
 
 Pseudoconsole console;
+// Pseudoconsole console2;
+
+int activeConsole = 0;
 
 int main()
 {
@@ -85,6 +67,8 @@ int main()
     HRESULT hr {E_UNEXPECTED};
     HANDLE  hConsole = {GetStdHandle(STD_OUTPUT_HANDLE)};
     HANDLE  hConsoleIn = {GetStdHandle(STD_INPUT_HANDLE)};
+
+    terminalSize = GetTerminalSize(hConsole);
 
     // Enable Console VT Processing
     DWORD consoleMode {};
@@ -104,11 +88,14 @@ int main()
                                    ENABLE_MOUSE_INPUT);
 
     console.Initialize(szCommand);
+    // console2.Initialize(szCommand);
 
     HANDLE hPipeListenerThread {reinterpret_cast<HANDLE>(
         _beginthread(PipeListener, 0, console.hPipeIn))};
     HANDLE hInputSenderThread {reinterpret_cast<HANDLE>(
         _beginthread(InputSender, 0, console.hPipeOut))};
+    HANDLE hStatusThraead {reinterpret_cast<HANDLE>(
+        _beginthread(StatusDrawer, 0, console.hPipeOut))};
 
     if (S_OK == hr)
     {
@@ -117,37 +104,6 @@ int main()
     }
 
     return S_OK == hr ? EXIT_SUCCESS : EXIT_FAILURE;
-}
-
-void __cdecl PipeListener(LPVOID pipe)
-{
-    HANDLE hPipe {pipe};
-    HANDLE hConsole {GetStdHandle(STD_OUTPUT_HANDLE)};
-
-    const DWORD BUFF_SIZE {2048};
-    char        szBuffer[BUFF_SIZE] {};
-
-    DWORD dwBytesWritten {};
-    DWORD dwBytesRead {};
-    BOOL  fRead {FALSE};
-    do {
-        // Read from the pipe
-        fRead =
-            ReadFile(hPipe, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
-
-        // Write received text to the Console
-        // Note: Write to the Console using WriteFile(hConsole...),
-        // not printf()/puts() to prevent partially-read VT sequences
-        // from corrupting output
-
-        WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
-                  NULL);
-
-        // std::string cleanString = StripAnsi(szBuffer, dwBytesRead);
-        // printw("%s", cleanString.c_str());
-        // refresh();
-
-    } while (fRead && dwBytesRead >= 0);
 }
 
 // Convert virtual key code to ANSI escape sequence or character
@@ -312,4 +268,68 @@ void __cdecl InputSender(LPVOID pipe)
         }
 
     } while (1);
+}
+
+void __cdecl PipeListener(LPVOID pipe)
+{
+    HANDLE hPipe {pipe};
+    HANDLE hConsole {GetStdHandle(STD_OUTPUT_HANDLE)};
+
+    const DWORD BUFF_SIZE {2048};
+    char        szBuffer[BUFF_SIZE] {};
+
+    DWORD dwBytesWritten {};
+    DWORD dwBytesRead {};
+    BOOL  fRead {FALSE};
+    do {
+        // Read from the pipe
+        fRead =
+            ReadFile(hPipe, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
+
+        // Write received text to the Console
+        // Note: Write to the Console using WriteFile(hConsole...),
+        // not printf()/puts() to prevent partially-read VT sequences
+        // from corrupting output
+
+        WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
+                  NULL);
+
+        // std::string cleanString = StripAnsi(szBuffer, dwBytesRead);
+        // printw("%s", cleanString.c_str());
+        // refresh();
+
+    } while (fRead && dwBytesRead >= 0);
+}
+
+void __cdecl StatusDrawer(LPVOID lpvoid)
+{
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD dwBytesWritten;
+
+    
+    // ANSI escape codes for black text on yellow background
+    const char* colorCode = "\x1b[30;43m";  // 30 = black foreground, 43 = yellow background
+    const char* resetCode = "\x1b[0m";      // Reset to default colors
+    char* cursorCode;
+    // sprintf(cursorCode, "\x1b[%d;%dH", terminalSize.y, 0);
+    
+    // Set the colors
+    WriteFile(hConsole, colorCode, static_cast<DWORD>(strlen(colorCode)), 
+              &dwBytesWritten, NULL);
+    // Set the cursor
+    // WriteFile(hConsole, cursorCode, static_cast<DWORD>(strlen(cursorCode)), 
+    //           &dwBytesWritten, NULL);
+    
+    // Create a string of spaces with the colored background
+    std::string spaces(terminalSize.x, ' ');
+    WriteFile(hConsole, spaces.c_str(), static_cast<DWORD>(spaces.length()), 
+              &dwBytesWritten, NULL);
+    
+    // Optionally reset colors after (remove this if you want the colors to persist)
+    // WriteFile(hConsole, resetCode, static_cast<DWORD>(strlen(resetCode)), 
+    //           &dwBytesWritten, NULL);
+    
+    while (1) {
+        Sleep(100);
+    }
 }

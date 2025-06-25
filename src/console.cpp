@@ -16,22 +16,22 @@ Vec2 terminalSize;
 // ANSI escape code functions
 void ClearScreen()
 {
-    printf("\x1b[2J\x1b[H");
+    printf("\033[2J\x1b[H");
 }
 
 void MoveCursor(int row, int col)
 {
-    printf("\x1b[%d;%dH", row, col);
+    printf("\033[%d;%dH", row, col);
 }
 
 void SetColor(int fg, int bg = 40)
 {
-    printf("\x1b[%d;%dm", fg, bg);
+    printf("\033[%d;%dm", fg, bg);
 }
 
 void ResetColor()
 {
-    printf("\x1b[0m");
+    printf("\033[0m");
 }
 
 Vec2 GetTerminalSize(HANDLE hConsole)
@@ -120,73 +120,73 @@ void SendKeyToPipe(HANDLE hPipe, const KEY_EVENT_RECORD& keyEvent)
     switch (keyEvent.wVirtualKeyCode)
     {
         case VK_UP:
-            strcpy_s(escapeSeq, "\x1b[A");
+            strcpy_s(escapeSeq, "\033[A");
             break;
         case VK_DOWN:
-            strcpy_s(escapeSeq, "\x1b[B");
+            strcpy_s(escapeSeq, "\033[B");
             break;
         case VK_RIGHT:
-            strcpy_s(escapeSeq, "\x1b[C");
+            strcpy_s(escapeSeq, "\033[C");
             break;
         case VK_LEFT:
-            strcpy_s(escapeSeq, "\x1b[D");
+            strcpy_s(escapeSeq, "\033[D");
             break;
         case VK_HOME:
-            strcpy_s(escapeSeq, "\x1b[H");
+            strcpy_s(escapeSeq, "\033[H");
             break;
         case VK_END:
-            strcpy_s(escapeSeq, "\x1b[F");
+            strcpy_s(escapeSeq, "\033[F");
             break;
         case VK_PRIOR: // Page Up
-            strcpy_s(escapeSeq, "\x1b[5~");
+            strcpy_s(escapeSeq, "\033[5~");
             break;
         case VK_NEXT: // Page Down
-            strcpy_s(escapeSeq, "\x1b[6~");
+            strcpy_s(escapeSeq, "\033[6~");
             break;
         case VK_INSERT:
-            strcpy_s(escapeSeq, "\x1b[2~");
+            strcpy_s(escapeSeq, "\033[2~");
             break;
         case VK_DELETE:
-            strcpy_s(escapeSeq, "\x1b[3~");
+            strcpy_s(escapeSeq, "\033[3~");
             break;
         case VK_F1:
-            strcpy_s(escapeSeq, "\x1bOP");
+            strcpy_s(escapeSeq, "\033OP");
             break;
         case VK_F2:
-            strcpy_s(escapeSeq, "\x1bOQ");
+            strcpy_s(escapeSeq, "\033OQ");
             break;
         case VK_F3:
-            strcpy_s(escapeSeq, "\x1bOR");
+            strcpy_s(escapeSeq, "\033OR");
             break;
         case VK_F4:
-            strcpy_s(escapeSeq, "\x1bOS");
+            strcpy_s(escapeSeq, "\033OS");
             break;
         case VK_F5:
-            strcpy_s(escapeSeq, "\x1b[15~");
+            strcpy_s(escapeSeq, "\033[15~");
             break;
         case VK_F6:
-            strcpy_s(escapeSeq, "\x1b[17~");
+            strcpy_s(escapeSeq, "\033[17~");
             break;
         case VK_F7:
-            strcpy_s(escapeSeq, "\x1b[18~");
+            strcpy_s(escapeSeq, "\033[18~");
             break;
         case VK_F8:
-            strcpy_s(escapeSeq, "\x1b[19~");
+            strcpy_s(escapeSeq, "\033[19~");
             break;
         case VK_F9:
-            strcpy_s(escapeSeq, "\x1b[20~");
+            strcpy_s(escapeSeq, "\033[20~");
             break;
         case VK_F10:
-            strcpy_s(escapeSeq, "\x1b[21~");
+            strcpy_s(escapeSeq, "\033[21~");
             break;
         case VK_F11:
-            strcpy_s(escapeSeq, "\x1b[23~");
+            strcpy_s(escapeSeq, "\033[23~");
             break;
         case VK_F12:
-            strcpy_s(escapeSeq, "\x1b[24~");
+            strcpy_s(escapeSeq, "\033[24~");
             break;
         case VK_ESCAPE:
-            strcpy_s(escapeSeq, "\x1b");
+            strcpy_s(escapeSeq, "\033");
             break;
         case VK_TAB:
             strcpy_s(escapeSeq, "\t");
@@ -293,43 +293,57 @@ void __cdecl PipeListener(LPVOID pipe)
 
         WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
                   NULL);
-
-        // std::string cleanString = StripAnsi(szBuffer, dwBytesRead);
-        // printw("%s", cleanString.c_str());
-        // refresh();
-
     } while (fRead && dwBytesRead >= 0);
+}
+
+void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
+                    const std::string& text = "")
+{
+    DWORD dwBytesWritten;
+
+    // Move to bottom line
+    char positionBuffer[32];
+    sprintf_s(positionBuffer, "\033[%d;1H", termSize.y);
+    WriteFile(hConsole, positionBuffer,
+              static_cast<DWORD>(strlen(positionBuffer)),
+              &dwBytesWritten, NULL);
+
+    // Set colors
+    const char* colorCode = "\033[30;43m";
+    WriteFile(hConsole, colorCode,
+              static_cast<DWORD>(strlen(colorCode)), &dwBytesWritten,
+              NULL);
+
+    // Create status line content
+    std::string statusLine = text;
+    if (statusLine.length() > termSize.x)
+    {
+        statusLine =
+            statusLine.substr(0, termSize.x); // Truncate if too long
+    }
+    else
+    {
+        statusLine.resize(termSize.x,
+                          ' '); // Pad with spaces to fill line
+    }
+
+    WriteFile(hConsole, statusLine.c_str(),
+              static_cast<DWORD>(statusLine.length()),
+              &dwBytesWritten, NULL);
+
+    // Reset colors
+    const char* resetCode = "\033[0m";
+    WriteFile(hConsole, resetCode,
+              static_cast<DWORD>(strlen(resetCode)), &dwBytesWritten,
+              NULL);
 }
 
 void __cdecl StatusDrawer(LPVOID lpvoid)
 {
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    DWORD dwBytesWritten;
 
-    
-    // ANSI escape codes for black text on yellow background
-    const char* colorCode = "\x1b[30;43m";  // 30 = black foreground, 43 = yellow background
-    const char* resetCode = "\x1b[0m";      // Reset to default colors
-    char* cursorCode;
-    // sprintf(cursorCode, "\x1b[%d;%dH", terminalSize.y, 0);
-    
-    // Set the colors
-    WriteFile(hConsole, colorCode, static_cast<DWORD>(strlen(colorCode)), 
-              &dwBytesWritten, NULL);
-    // Set the cursor
-    // WriteFile(hConsole, cursorCode, static_cast<DWORD>(strlen(cursorCode)), 
-    //           &dwBytesWritten, NULL);
-    
-    // Create a string of spaces with the colored background
-    std::string spaces(terminalSize.x, ' ');
-    WriteFile(hConsole, spaces.c_str(), static_cast<DWORD>(spaces.length()), 
-              &dwBytesWritten, NULL);
-    
-    // Optionally reset colors after (remove this if you want the colors to persist)
-    // WriteFile(hConsole, resetCode, static_cast<DWORD>(strlen(resetCode)), 
-    //           &dwBytesWritten, NULL);
-    
-    while (1) {
-        Sleep(100);
-    }
+    // Draw initial status line
+    DrawStatusLine(hConsole, terminalSize, "Status: Ready");
+
+    while (1) { Sleep(100); }
 }

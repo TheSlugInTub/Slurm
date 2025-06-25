@@ -104,6 +104,7 @@ endif()
 # Add the executable
 add_executable(${PROJECT_NAME} 
     ${CMAKE_SOURCE_DIR}/src/console.cpp
+    ${CMAKE_SOURCE_DIR}/src/pseudoconsole.cpp
     ${INCLUDESOURCES}
 )
 

@@ -24,6 +24,7 @@ class Pseudoconsole
 
     void Initialize(wchar_t* command);
     void Close();
+    void Resize(COORD newSize);
 
   private:
     HRESULT InitializeStartupInfoAttachedToPseudoConsole(

@@ -49,6 +49,11 @@ void Pseudoconsole::Close()
     if (INVALID_HANDLE_VALUE != hPipeIn)
         CloseHandle(hPipeIn);
 }
+    
+void Pseudoconsole::Resize(COORD newSize)
+{
+    HRESULT hr = ResizePseudoConsole(hPC, newSize);
+}
 
 HRESULT Pseudoconsole::CreatePseudoConsoleAndPipes(HANDLE* phPipeIn,
                                                    HANDLE* phPipeOut)
@@ -70,7 +75,7 @@ HRESULT Pseudoconsole::CreatePseudoConsoleAndPipes(HANDLE* phPipeIn,
             consoleSize.X =
                 csbi.srWindow.Right - csbi.srWindow.Left + 1;
             consoleSize.Y =
-                csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+                csbi.srWindow.Bottom - csbi.srWindow.Top;
         }
 
         // Create the Pseudo Console of the required size, attached to

@@ -13,27 +13,6 @@ struct Vec2
 
 Vec2 terminalSize;
 
-// ANSI escape code functions
-void ClearScreen()
-{
-    printf("\033[2J\x1b[H");
-}
-
-void MoveCursor(int row, int col)
-{
-    printf("\033[%d;%dH", row, col);
-}
-
-void SetColor(int fg, int bg = 40)
-{
-    printf("\033[%d;%dm", fg, bg);
-}
-
-void ResetColor()
-{
-    printf("\033[0m");
-}
-
 Vec2 GetTerminalSize(HANDLE hConsole)
 {
     CONSOLE_SCREEN_BUFFER_INFO csbi {};
@@ -47,13 +26,14 @@ void __cdecl InputSender(LPVOID);
 void __cdecl StatusDrawer(LPVOID);
 
 Pseudoconsole console;
-// Pseudoconsole console2;
 
-int activeConsole = 0;
+CRITICAL_SECTION consoleMutex;
 
 int main()
 {
     // StartProgram();
+
+    InitializeCriticalSection(&consoleMutex);
 
     // Set console to UTF-8 for proper Unicode support
     SetConsoleOutputCP(CP_UTF8);
@@ -234,6 +214,9 @@ void SendKeyToPipe(HANDLE hPipe, const KEY_EVENT_RECORD& keyEvent)
     }
 }
 
+void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
+                    const std::string& text);
+
 // Thread function to read input from our console and send to
 // pseudoconsole
 void __cdecl InputSender(LPVOID pipe)
@@ -255,8 +238,22 @@ void __cdecl InputSender(LPVOID pipe)
                     SendKeyToPipe(hPipe,
                                   inputBuffer[i].Event.KeyEvent);
                 }
-                // Ignore other event types (MOUSE_EVENT,
-                // WINDOW_BUFFER_SIZE_EVENT, etc.)
+                else if (inputBuffer[i].EventType ==
+                         WINDOW_BUFFER_SIZE_EVENT)
+                {
+                    EnterCriticalSection(&consoleMutex);
+                    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+                    terminalSize = GetTerminalSize(hConsole);
+
+                    // Resize pseudoconsole (adjust for status bar)
+                    int rows = terminalSize.y - 1;
+                    if (rows < 1)
+                        rows = 1; // Prevent invalid size
+                    COORD newSize = {.X = (short)terminalSize.x,
+                                     .Y = (short)rows};
+                    console.Resize(newSize);
+                    LeaveCriticalSection(&consoleMutex);
+                }
             }
 
             FlushFileBuffers(hPipe);
@@ -291,8 +288,13 @@ void __cdecl PipeListener(LPVOID pipe)
         // not printf()/puts() to prevent partially-read VT sequences
         // from corrupting output
 
+        EnterCriticalSection(&consoleMutex);
+
         WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
                   NULL);
+
+        LeaveCriticalSection(&consoleMutex);
+
     } while (fRead && dwBytesRead >= 0);
 }
 
@@ -301,12 +303,15 @@ void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
 {
     DWORD dwBytesWritten;
 
-    // Move to bottom line
-    char positionBuffer[32];
-    sprintf_s(positionBuffer, "\033[%d;1H", termSize.y);
-    WriteFile(hConsole, positionBuffer,
-              static_cast<DWORD>(strlen(positionBuffer)),
-              &dwBytesWritten, NULL);
+    char ansiBuffer[32] = "\033[s";
+    WriteFile(hConsole, ansiBuffer,
+              static_cast<DWORD>(strlen(ansiBuffer)), &dwBytesWritten,
+              NULL);
+
+    sprintf_s(ansiBuffer, "\033[%d;1H", termSize.y);
+    WriteFile(hConsole, ansiBuffer,
+              static_cast<DWORD>(strlen(ansiBuffer)), &dwBytesWritten,
+              NULL);
 
     // Set colors
     const char* colorCode = "\033[30;43m";
@@ -336,14 +341,27 @@ void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
     WriteFile(hConsole, resetCode,
               static_cast<DWORD>(strlen(resetCode)), &dwBytesWritten,
               NULL);
+
+    const char* restoreCursor = "\033[u";
+    WriteFile(hConsole, restoreCursor,
+              static_cast<DWORD>(strlen(restoreCursor)),
+              &dwBytesWritten, NULL);
 }
 
-void __cdecl StatusDrawer(LPVOID lpvoid)
+void __cdecl StatusDrawer(LPVOID)
 {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    const std::string statusText =
+        "SLURM 3.161.746 ------------ MADE BY SLUGARIUS "
+        "------------ PROPERTY OF THE OPENWELL FOUNDATION";
 
-    // Draw initial status line
-    DrawStatusLine(hConsole, terminalSize, "Status: Ready");
+    while (1)
+    {
+        Sleep(100); // Update 10x/sec
 
-    while (1) { Sleep(100); }
+        EnterCriticalSection(&consoleMutex);
+        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+        Vec2   currentSize = GetTerminalSize(hConsole);
+        DrawStatusLine(hConsole, currentSize, statusText);
+        LeaveCriticalSection(&consoleMutex);
+    }
 }

@@ -1,5 +1,7 @@
 #include <iostream>
 #include <cstdio>
+#include <vector>
+#include <thread>
 #include <curses.h>
 #include <pseudoconsole.hpp>
 
@@ -21,347 +23,346 @@ Vec2 GetTerminalSize(HANDLE hConsole)
                 csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
 }
 
-void __cdecl PipeListener(LPVOID);
-void __cdecl InputSender(LPVOID);
-void __cdecl StatusDrawer(LPVOID);
+void __cdecl PipeListener(HANDLE hPipe, int consoleIndex);
+void __cdecl InputSender(int* consoleIndex);
 
-Pseudoconsole console;
+void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
+                    const std::string& text);
+
+std::vector<Pseudoconsole> consoles;
 
 CRITICAL_SECTION consoleMutex;
 
+int activeConsole = 0;
+
+const std::string statusText =
+    "SLURM 3.161.746 ------------ MADE BY "
+    "SLUGARIUS "
+    "------------ PROPERTY OF THE OPENWELL "
+    "FOUNDATION";
+
+wchar_t szCommand[] {L"cmd.exe"};
+
+// Fixed horizontal split function
+void CreateHorizontalSplit(int index)
+{
+    IVec2 originalPos = consoles[index].position;
+    COORD originalSize = consoles[index].size;
+
+    // Resize original console to half width
+    COORD newSizeOriginal = { (SHORT)(originalSize.X / 2), originalSize.Y };
+    consoles[index].Resize(newSizeOriginal);
+    
+    // Create new console
+    consoles.push_back({});
+    int newIndex = consoles.size() - 1;
+
+    // Calculate new console size
+    COORD newSizeNew = { 
+        (SHORT)(originalSize.X - newSizeOriginal.X), 
+        originalSize.Y 
+    };
+    
+    // Set new console position
+    IVec2 newPos = {
+        originalPos.x + newSizeOriginal.X,
+        originalPos.y
+    };
+
+    // Initialize and position new console
+    consoles[newIndex].Initialize(szCommand);
+    consoles[newIndex].Resize(newSizeNew);
+    consoles[newIndex].position = newPos;
+
+    activeConsole = newIndex;
+
+    // Update ncurses windows
+    wresize(consoles[index].window, newSizeOriginal.Y, newSizeOriginal.X);
+    mvwin(consoles[index].window, originalPos.y, originalPos.x);
+    
+    consoles[newIndex].window = newwin(
+        newSizeNew.Y, newSizeNew.X, 
+        newPos.y, newPos.x
+    );
+    
+    // Start pipe listener for new console
+    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex).detach();
+
+    // Refresh windows
+    wrefresh(consoles[index].window);
+    wrefresh(consoles[newIndex].window);
+}
+
+// Fixed vertical split function
+void CreateVerticalSplit(int index)
+{
+    IVec2 originalPos = consoles[index].position;
+    COORD originalSize = consoles[index].size;
+
+    // Resize original console to half height
+    COORD newSizeOriginal = { originalSize.X, (SHORT)(originalSize.Y / 2) };
+    consoles[index].Resize(newSizeOriginal);
+    
+    // Create new console
+    consoles.push_back({});
+    int newIndex = consoles.size() - 1;
+
+    // Calculate new console size
+    COORD newSizeNew = { 
+        originalSize.X, 
+        (SHORT)(originalSize.Y - newSizeOriginal.Y) 
+    };
+    
+    // Set new console position (below original)
+    IVec2 newPos = {
+        originalPos.x,
+        originalPos.y + newSizeOriginal.Y
+    };
+
+    // Initialize and position new console
+    consoles[newIndex].Initialize(szCommand);
+    consoles[newIndex].Resize(newSizeNew);
+    consoles[newIndex].position = newPos;
+
+    activeConsole = newIndex;
+
+    // Update ncurses windows
+    wresize(consoles[index].window, newSizeOriginal.Y, newSizeOriginal.X);
+    mvwin(consoles[index].window, originalPos.y, originalPos.x);
+    
+    consoles[newIndex].window = newwin(
+        newSizeNew.Y, newSizeNew.X, 
+        newPos.y, newPos.x
+    );
+    
+    // Start pipe listener for new console
+    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex).detach();
+
+    // Refresh windows
+    wrefresh(consoles[index].window);
+    wrefresh(consoles[newIndex].window);
+}
+
+void StartProgram()
+{
+    // Initialize ncurses
+    initscr();
+
+    // Check if colors are supported
+    if (has_colors())
+    {
+        start_color();
+        init_pair(1, COLOR_GREEN, COLOR_BLACK);  // For prompt
+        init_pair(2, COLOR_YELLOW, COLOR_BLACK); // For directory
+        init_pair(3, COLOR_RED, COLOR_BLACK);    // For errors
+    }
+
+    // Configure ncurses
+    keypad(stdscr, TRUE);   // Enable special keys
+    noecho();               // Don't echo input automatically
+    cbreak();               // Disable line buffering
+    nodelay(stdscr, FALSE); // Make getch() blocking
+
+    // Get terminal size
+    getmaxyx(stdscr, terminalSize.y, terminalSize.x);
+
+    refresh();
+}
+
 int main()
 {
-    // StartProgram();
-
     InitializeCriticalSection(&consoleMutex);
 
-    // Set console to UTF-8 for proper Unicode support
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
+    StartProgram();
 
-    // Enable UTF-8 mode for C++ streams
-    _setmode(_fileno(stdout), _O_U8TEXT);
-    _setmode(_fileno(stdin), _O_U8TEXT);
-
-    wchar_t szCommand[] {L"cmd.exe"};
     HRESULT hr {E_UNEXPECTED};
     HANDLE  hConsole = {GetStdHandle(STD_OUTPUT_HANDLE)};
     HANDLE  hConsoleIn = {GetStdHandle(STD_INPUT_HANDLE)};
 
     terminalSize = GetTerminalSize(hConsole);
 
-    // Enable Console VT Processing
-    DWORD consoleMode {};
-    GetConsoleMode(hConsole, &consoleMode);
-    hr = SetConsoleMode(hConsole,
-                        consoleMode |
-                            ENABLE_VIRTUAL_TERMINAL_PROCESSING |
-                            ENABLE_PROCESSED_INPUT)
-             ? S_OK
-             : GetLastError();
+    int cIndex = 0;
 
-    // Enable raw input processing to capture all keys
-    DWORD inputMode {};
-    GetConsoleMode(hConsoleIn, &inputMode);
-    SetConsoleMode(hConsoleIn, inputMode | ENABLE_EXTENDED_FLAGS |
-                                   ENABLE_WINDOW_INPUT |
-                                   ENABLE_MOUSE_INPUT);
+    consoles.push_back({});
+    consoles[cIndex].Initialize(szCommand);
 
-    console.Initialize(szCommand);
-    // console2.Initialize(szCommand);
+    COORD newSize = consoles[cIndex].size;
+    IVec2 newPos = consoles[cIndex].position;
+    consoles[cIndex].window =
+        newwin(newSize.Y, newSize.X, newPos.y, newPos.x);
 
-    HANDLE hPipeListenerThread {reinterpret_cast<HANDLE>(
-        _beginthread(PipeListener, 0, console.hPipeIn))};
-    HANDLE hInputSenderThread {reinterpret_cast<HANDLE>(
-        _beginthread(InputSender, 0, console.hPipeOut))};
-    HANDLE hStatusThraead {reinterpret_cast<HANDLE>(
-        _beginthread(StatusDrawer, 0, console.hPipeOut))};
+    std::thread hPipeListenerThread(
+        PipeListener, consoles[activeConsole].hPipeIn, 0);
 
-    if (S_OK == hr)
-    {
-        // Wait up to 10s for ping process to complete
-        WaitForSingleObject(console.piClient.hThread, INFINITE);
-    }
+    std::thread hInputSenderThread(InputSender, &activeConsole);
+
+    // EnterCriticalSection(&consoleMutex);
+    // DrawStatusLine(hConsole, terminalSize, statusText);
+    // LeaveCriticalSection(&consoleMutex);
+
+    while (1) {}
 
     return S_OK == hr ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-// Convert virtual key code to ANSI escape sequence or character
-void SendKeyToPipe(HANDLE hPipe, const KEY_EVENT_RECORD& keyEvent)
+void SendKeyToPipe(HANDLE hPipe, int key)
 {
     DWORD dwBytesWritten {};
-    char  escapeSeq[32] {};
 
-    // Only process key down events (not key up)
-    if (!keyEvent.bKeyDown)
-        return;
-
-    // Handle special keys that generate escape sequences
-    switch (keyEvent.wVirtualKeyCode)
+    switch (key)
     {
-        case VK_UP:
-            strcpy_s(escapeSeq, "\033[A");
+        case KEY_ENTER:
+        case '\r':
+        case '\n':
+        {
+            char enter[] = "\r\n";
+            WriteFile(hPipe, enter, 2, &dwBytesWritten, NULL);
             break;
-        case VK_DOWN:
-            strcpy_s(escapeSeq, "\033[B");
+        }
+        case KEY_BACKSPACE:
+        case '\b':
+        case 127:
+        {
+            char backspace = '\b';
+            WriteFile(hPipe, &backspace, 1, &dwBytesWritten, NULL);
             break;
-        case VK_RIGHT:
-            strcpy_s(escapeSeq, "\033[C");
+        }
+        case KEY_UP:
+        {
+            // char up[] = "\x1b[A";
+            // WriteFile(hPipe, up, 3, &dwBytesWritten, NULL);
+            CreateHorizontalSplit(activeConsole);
             break;
-        case VK_LEFT:
-            strcpy_s(escapeSeq, "\033[D");
+        }
+        case KEY_DOWN:
+        {
+            // char down[] = "\x1b[B";
+            // WriteFile(hPipe, down, 3, &dwBytesWritten, NULL);
+            CreateVerticalSplit(activeConsole);
             break;
-        case VK_HOME:
-            strcpy_s(escapeSeq, "\033[H");
+        }
+        case KEY_RIGHT:
+        {
+            char right[] = "\x1b[C";
+            WriteFile(hPipe, right, 3, &dwBytesWritten, NULL);
             break;
-        case VK_END:
-            strcpy_s(escapeSeq, "\033[F");
+        }
+        case KEY_LEFT:
+        {
+            char left[] = "\x1b[D";
+            WriteFile(hPipe, left, 3, &dwBytesWritten, NULL);
             break;
-        case VK_PRIOR: // Page Up
-            strcpy_s(escapeSeq, "\033[5~");
+        }
+        case '\t':
+        {
+            char tab = '\t';
+            WriteFile(hPipe, &tab, 1, &dwBytesWritten, NULL);
             break;
-        case VK_NEXT: // Page Down
-            strcpy_s(escapeSeq, "\033[6~");
-            break;
-        case VK_INSERT:
-            strcpy_s(escapeSeq, "\033[2~");
-            break;
-        case VK_DELETE:
-            strcpy_s(escapeSeq, "\033[3~");
-            break;
-        case VK_F1:
-            strcpy_s(escapeSeq, "\033OP");
-            break;
-        case VK_F2:
-            strcpy_s(escapeSeq, "\033OQ");
-            break;
-        case VK_F3:
-            strcpy_s(escapeSeq, "\033OR");
-            break;
-        case VK_F4:
-            strcpy_s(escapeSeq, "\033OS");
-            break;
-        case VK_F5:
-            strcpy_s(escapeSeq, "\033[15~");
-            break;
-        case VK_F6:
-            strcpy_s(escapeSeq, "\033[17~");
-            break;
-        case VK_F7:
-            strcpy_s(escapeSeq, "\033[18~");
-            break;
-        case VK_F8:
-            strcpy_s(escapeSeq, "\033[19~");
-            break;
-        case VK_F9:
-            strcpy_s(escapeSeq, "\033[20~");
-            break;
-        case VK_F10:
-            strcpy_s(escapeSeq, "\033[21~");
-            break;
-        case VK_F11:
-            strcpy_s(escapeSeq, "\033[23~");
-            break;
-        case VK_F12:
-            strcpy_s(escapeSeq, "\033[24~");
-            break;
-        case VK_ESCAPE:
-            strcpy_s(escapeSeq, "\033");
-            break;
-        case VK_TAB:
-            strcpy_s(escapeSeq, "\t");
-            break;
-        case VK_BACK:
-            strcpy_s(escapeSeq, "\b");
-            break;
-        case VK_RETURN:
-            strcpy_s(escapeSeq, "\r");
-            break;
+        }
         default:
-            // Handle regular characters and modified keys
-            if (keyEvent.uChar.AsciiChar != 0)
+        {
+            if (key >= 32 && key <= 126)
+            { // Printable ASCII
+                char ch = (char)key;
+                WriteFile(hPipe, &ch, 1, &dwBytesWritten, NULL);
+            }
+            break;
+        }
+    }
+
+    FlushFileBuffers(hPipe);
+}
+
+// Thread function to read input from ncurses and send to
+// pseudoconsole
+void __cdecl InputSender(int* consoleIndexP)
+{
+    int key;
+
+    do {
+        int consoleIndex = (*consoleIndexP);
+
+        key = getch();
+
+        // Handle special application keys
+        if (key == 27)
+        { // ESC key - could be start of escape sequence or standalone
+          // ESC
+            nodelay(stdscr, TRUE); // Make next getch non-blocking
+            int next = getch();
+            nodelay(stdscr, FALSE); // Restore blocking
+
+            if (next == ERR)
             {
-                // Handle Ctrl+key combinations
-                if (keyEvent.dwControlKeyState &
-                    (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))
-                {
-                    char ctrlChar = keyEvent.uChar.AsciiChar;
-                    WriteFile(hPipe, &ctrlChar, 1, &dwBytesWritten,
-                              NULL);
-                }
-                else
-                {
-                    // Regular character
-                    char ch = keyEvent.uChar.AsciiChar;
-                    WriteFile(hPipe, &ch, 1, &dwBytesWritten, NULL);
-                }
-                return;
+                // Standalone ESC key
+                char  esc = 27;
+                DWORD dwBytesWritten;
+                WriteFile(consoles[consoleIndex].hPipeOut, &esc, 1,
+                          &dwBytesWritten, NULL);
+                FlushFileBuffers(consoles[consoleIndex].hPipeOut);
             }
             else
             {
-                // Keys that don't produce characters (like Caps Lock,
-                // etc.) - ignore
-                return;
+                // Put the character back and let normal processing
+                // handle it
+                ungetch(next);
+                ungetch(key);
+                continue;
             }
-    }
-
-    // Send the escape sequence if we have one
-    if (escapeSeq[0] != 0)
-    {
-        WriteFile(hPipe, escapeSeq,
-                  static_cast<DWORD>(strlen(escapeSeq)),
-                  &dwBytesWritten, NULL);
-    }
-}
-
-void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
-                    const std::string& text);
-
-// Thread function to read input from our console and send to
-// pseudoconsole
-void __cdecl InputSender(LPVOID pipe)
-{
-    HANDLE hPipe {reinterpret_cast<HANDLE>(pipe)};
-    HANDLE hStdIn {GetStdHandle(STD_INPUT_HANDLE)};
-
-    INPUT_RECORD inputBuffer[128];
-    DWORD        eventsRead {};
-
-    do {
-        // Read console input events
-        if (ReadConsoleInput(hStdIn, inputBuffer, 128, &eventsRead))
-        {
-            for (DWORD i = 0; i < eventsRead; i++)
-            {
-                if (inputBuffer[i].EventType == KEY_EVENT)
-                {
-                    SendKeyToPipe(hPipe,
-                                  inputBuffer[i].Event.KeyEvent);
-                }
-                else if (inputBuffer[i].EventType ==
-                         WINDOW_BUFFER_SIZE_EVENT)
-                {
-                    EnterCriticalSection(&consoleMutex);
-                    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-                    terminalSize = GetTerminalSize(hConsole);
-
-                    // Resize pseudoconsole (adjust for status bar)
-                    int rows = terminalSize.y - 1;
-                    if (rows < 1)
-                        rows = 1; // Prevent invalid size
-                    COORD newSize = {.X = (short)terminalSize.x,
-                                     .Y = (short)rows};
-                    console.Resize(newSize);
-                    LeaveCriticalSection(&consoleMutex);
-                }
-            }
-
-            FlushFileBuffers(hPipe);
         }
         else
         {
-            // Error reading input
-            break;
+            SendKeyToPipe(consoles[consoleIndex].hPipeOut, key);
         }
 
-    } while (1);
+    } while (key != 'q' && key != 'Q'); // Add quit condition
 }
 
-void __cdecl PipeListener(LPVOID pipe)
+void CleanString(char* string, int len)
 {
-    HANDLE hPipe {pipe};
-    HANDLE hConsole {GetStdHandle(STD_OUTPUT_HANDLE)};
+    for (int i = 0; i < len; i++)
+    {
+        if (string[i] == '\r')
+        {
+            string[i] = ' ';
+        }
+    }
+}
 
+void __cdecl PipeListener(HANDLE hPipe, int consoleIndex)
+{
     const DWORD BUFF_SIZE {2048};
-    char        szBuffer[BUFF_SIZE] {};
+    char        szBuffer[BUFF_SIZE];
 
-    DWORD dwBytesWritten {};
     DWORD dwBytesRead {};
     BOOL  fRead {FALSE};
+
     do {
+        // Clear buffer
+        memset(szBuffer, 0, BUFF_SIZE);
+
         // Read from the pipe
-        fRead =
-            ReadFile(hPipe, szBuffer, BUFF_SIZE, &dwBytesRead, NULL);
+        fRead = ReadFile(hPipe, szBuffer, BUFF_SIZE - 1, &dwBytesRead,
+                         NULL);
 
-        // Write received text to the Console
-        // Note: Write to the Console using WriteFile(hConsole...),
-        // not printf()/puts() to prevent partially-read VT sequences
-        // from corrupting output
+        if (fRead && dwBytesRead > 0)
+        {
+            // Ensure null termination
+            szBuffer[dwBytesRead] = '\0';
 
-        EnterCriticalSection(&consoleMutex);
+            // Write to ncurses screen
+            EnterCriticalSection(&consoleMutex);
 
-        WriteFile(hConsole, szBuffer, dwBytesRead, &dwBytesWritten,
-                  NULL);
+            CleanString(szBuffer, dwBytesRead);
 
-        LeaveCriticalSection(&consoleMutex);
+            // Add the text without additional newlines
+            move(consoles[consoleIndex].position.y,
+                 consoles[consoleIndex].position.x);
+            waddstr(consoles[consoleIndex].window, szBuffer);
+            wrefresh(consoles[consoleIndex].window);
 
-    } while (fRead && dwBytesRead >= 0);
-}
+            LeaveCriticalSection(&consoleMutex);
+        }
 
-void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
-                    const std::string& text = "")
-{
-    DWORD dwBytesWritten;
-
-    char ansiBuffer[32] = "\033[s";
-    WriteFile(hConsole, ansiBuffer,
-              static_cast<DWORD>(strlen(ansiBuffer)), &dwBytesWritten,
-              NULL);
-
-    sprintf_s(ansiBuffer, "\033[%d;1H", termSize.y);
-    WriteFile(hConsole, ansiBuffer,
-              static_cast<DWORD>(strlen(ansiBuffer)), &dwBytesWritten,
-              NULL);
-
-    // Set colors
-    const char* colorCode = "\033[30;43m";
-    WriteFile(hConsole, colorCode,
-              static_cast<DWORD>(strlen(colorCode)), &dwBytesWritten,
-              NULL);
-
-    // Create status line content
-    std::string statusLine = text;
-    if (statusLine.length() > termSize.x)
-    {
-        statusLine =
-            statusLine.substr(0, termSize.x); // Truncate if too long
-    }
-    else
-    {
-        statusLine.resize(termSize.x,
-                          ' '); // Pad with spaces to fill line
-    }
-
-    WriteFile(hConsole, statusLine.c_str(),
-              static_cast<DWORD>(statusLine.length()),
-              &dwBytesWritten, NULL);
-
-    // Reset colors
-    const char* resetCode = "\033[0m";
-    WriteFile(hConsole, resetCode,
-              static_cast<DWORD>(strlen(resetCode)), &dwBytesWritten,
-              NULL);
-
-    const char* restoreCursor = "\033[u";
-    WriteFile(hConsole, restoreCursor,
-              static_cast<DWORD>(strlen(restoreCursor)),
-              &dwBytesWritten, NULL);
-}
-
-void __cdecl StatusDrawer(LPVOID)
-{
-    const std::string statusText =
-        "SLURM 3.161.746 ------------ MADE BY SLUGARIUS "
-        "------------ PROPERTY OF THE OPENWELL FOUNDATION";
-
-    while (1)
-    {
-        Sleep(100); // Update 10x/sec
-
-        EnterCriticalSection(&consoleMutex);
-        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        Vec2   currentSize = GetTerminalSize(hConsole);
-        DrawStatusLine(hConsole, currentSize, statusText);
-        LeaveCriticalSection(&consoleMutex);
-    }
+    } while (fRead && dwBytesRead > 0);
 }

@@ -52,7 +52,10 @@ void Pseudoconsole::Close()
     
 void Pseudoconsole::Resize(COORD newSize)
 {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
     HRESULT hr = ResizePseudoConsole(hPC, newSize);
+    GetConsoleScreenBufferInfo(hPC, &csbi);
+    size = csbi.dwSize;
 }
 
 HRESULT Pseudoconsole::CreatePseudoConsoleAndPipes(HANDLE* phPipeIn,
@@ -76,6 +79,7 @@ HRESULT Pseudoconsole::CreatePseudoConsoleAndPipes(HANDLE* phPipeIn,
                 csbi.srWindow.Right - csbi.srWindow.Left + 1;
             consoleSize.Y =
                 csbi.srWindow.Bottom - csbi.srWindow.Top;
+            size = consoleSize;
         }
 
         // Create the Pseudo Console of the required size, attached to

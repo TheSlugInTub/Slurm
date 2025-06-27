@@ -5,6 +5,7 @@
 #    include <tchar.h>
 #    include <process.h>
 #    include <fcntl.h>
+#    include <curses.h>
 #    define isatty _isatty
 #    define fileno _fileno
 #else
@@ -12,6 +13,20 @@
 #    include <sys/ioctl.h>
 #    include <termios.h>
 #endif
+
+struct IVec2
+{
+    int x = 0;
+    int y = 0;
+
+    IVec2(int x, int y)
+        : x(x), y(y)
+    {}
+    
+    IVec2()
+        : x(0), y(0)
+    {}
+};
 
 class Pseudoconsole
 {
@@ -21,6 +36,9 @@ class Pseudoconsole
     HANDLE              hPipeOut;
     PROCESS_INFORMATION piClient {};
     STARTUPINFOEXW      startupInfo {};
+    WINDOW* window;
+    COORD size;
+    IVec2 position;
 
     void Initialize(wchar_t* command);
     void Close();

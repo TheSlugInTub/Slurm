@@ -1,5 +1,5 @@
 #ifdef _WIN32
-#    include <windows.h>
+#    include <Windows.h>
 #    include <consoleapi.h>
 #    include <io.h>
 #    include <tchar.h>
@@ -39,6 +39,8 @@ class Pseudoconsole
     WINDOW* window;
     COORD size;
     IVec2 position;
+    IVec2 cursorPosition;
+    IVec2 savedCursorPosition;
 
     void Initialize(wchar_t* command);
     void Close();

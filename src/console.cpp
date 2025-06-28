@@ -27,9 +27,6 @@ Vec2 GetTerminalSize(HANDLE hConsole)
 void __cdecl PipeListener(HANDLE hPipe, int consoleIndex);
 void __cdecl InputSender(int* consoleIndex);
 
-void DrawStatusLine(HANDLE hConsole, const Vec2& termSize,
-                    const std::string& text);
-
 std::vector<Pseudoconsole> consoles;
 
 CRITICAL_SECTION consoleMutex;
@@ -43,7 +40,7 @@ const std::string statusText =
     "FOUNDATION";
 
 wchar_t szCommand[] {L"cmd.exe"};
-    
+
 std::ofstream file;
 
 // Fixed horizontal split function
@@ -72,6 +69,7 @@ void CreateHorizontalSplit(int index)
     consoles[newIndex].Initialize(szCommand);
     consoles[newIndex].Resize(newSizeNew);
     consoles[newIndex].position = newPos;
+    consoles[newIndex].size = newSizeNew;
 
     activeConsole = newIndex;
 
@@ -90,10 +88,6 @@ void CreateHorizontalSplit(int index)
     // Refresh windows
     wrefresh(consoles[index].window);
     wrefresh(consoles[newIndex].window);
-    
-    file << "newPos: " << newPos.x << ", " << newPos.y << '\n';
-    file << "newSizeNew: " << newSizeNew.X << ", " << newSizeNew.Y << '\n';
-    file << "newSizeOriginal: " << newSizeOriginal.X << ", " << newSizeOriginal.Y << '\n';
 }
 
 // Fixed vertical split function
@@ -122,6 +116,7 @@ void CreateVerticalSplit(int index)
     consoles[newIndex].Initialize(szCommand);
     consoles[newIndex].Resize(newSizeNew);
     consoles[newIndex].position = newPos;
+    consoles[newIndex].size = newSizeNew;
 
     activeConsole = newIndex;
 
@@ -140,10 +135,6 @@ void CreateVerticalSplit(int index)
     // Refresh windows
     wrefresh(consoles[index].window);
     wrefresh(consoles[newIndex].window);
-
-    file << "newPos: " << newPos.x << ", " << newPos.y << '\n';
-    file << "newSizeNew: " << newSizeNew.X << ", " << newSizeNew.Y << '\n';
-    file << "newSizeOriginal: " << newSizeOriginal.X << ", " << newSizeOriginal.Y << '\n';
 }
 
 void StartProgram()
@@ -155,9 +146,14 @@ void StartProgram()
     if (has_colors())
     {
         start_color();
-        init_pair(1, COLOR_GREEN, COLOR_BLACK);  // For prompt
-        init_pair(2, COLOR_YELLOW, COLOR_BLACK); // For directory
-        init_pair(3, COLOR_RED, COLOR_BLACK);    // For errors
+        init_pair(1, COLOR_GREEN, COLOR_BLACK);
+        init_pair(2, COLOR_YELLOW, COLOR_BLACK);
+        init_pair(3, COLOR_RED, COLOR_BLACK);
+        init_pair(4, COLOR_BLUE, COLOR_BLACK);
+        init_pair(5, COLOR_MAGENTA, COLOR_BLACK);
+        init_pair(6, COLOR_CYAN, COLOR_BLACK);
+        init_pair(7, COLOR_WHITE, COLOR_BLACK);
+        init_pair(8, COLOR_BLACK, COLOR_BLACK);
     }
 
     // Configure ncurses
@@ -165,6 +161,7 @@ void StartProgram()
     noecho();               // Don't echo input automatically
     cbreak();               // Disable line buffering
     nodelay(stdscr, FALSE); // Make getch() blocking
+    setlocale(LC_ALL, "");
 
     // Get terminal size
     getmaxyx(stdscr, terminalSize.y, terminalSize.x);
@@ -200,10 +197,6 @@ int main()
         PipeListener, consoles[activeConsole].hPipeIn, 0);
 
     std::thread hInputSenderThread(InputSender, &activeConsole);
-
-    // EnterCriticalSection(&consoleMutex);
-    // DrawStatusLine(hConsole, terminalSize, statusText);
-    // LeaveCriticalSection(&consoleMutex);
 
     while (1) {}
 
@@ -339,6 +332,452 @@ std::string CleanString(char* string, int len)
     return str;
 }
 
+enum ANSIType
+{
+    ANSIType_CSI,
+    ANSIType_OSC,
+    ANSIType_DCS,
+    ANSIType_Single,
+};
+
+// And here comes the ANSI parser
+void PrintString(char* str, DWORD len, WINDOW* win)
+{
+    for (int i = 0; i < (int)len; ++i)
+    {
+        char ch = str[i];
+
+        if (ch == '\x1b' && i + 1 < (int)len)
+        {
+            ANSIType ansiType;
+            int      startPos = i;
+            i++; // Move past ESC
+            char ch1 = str[i];
+
+            if (ch1 == '[')
+            {
+                ansiType = ANSIType_CSI;
+                i++; // Move past '['
+
+                // Parse CSI sequence
+                char params[64] = {0};
+                int  paramIdx = 0;
+
+                // Collect parameter characters (digits, semicolons,
+                // spaces)
+                while (i < (int)len && paramIdx < 63)
+                {
+                    char c = str[i];
+                    if ((c >= '0' && c <= '9') || c == ';' ||
+                        c == ' ' || c == '?')
+                    {
+                        params[paramIdx++] = c;
+                        i++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                // Get the final command character
+                char command = (i < (int)len) ? str[i] : 0;
+
+                // Handle common CSI sequences
+                switch (command)
+                {
+                    case 'm': // SGR - Select Graphic Rendition
+                              // (colors, styles)
+                    {
+                        // Parse color/style parameters
+                        if (paramIdx == 0 ||
+                            (paramIdx == 1 && params[0] == '0'))
+                        {
+                            // Reset all attributes
+                            wattrset(win, A_NORMAL);
+                        }
+                        else
+                        {
+                            // Parse semicolon-separated parameters
+                            char* param = strtok(params, ";");
+                            while (param != NULL)
+                            {
+                                int code = atoi(param);
+                                switch (code)
+                                {
+                                    case 0:
+                                        wattrset(win, A_NORMAL);
+                                        break;
+                                    case 1:
+                                        wattron(win, A_BOLD);
+                                        break;
+                                    case 2:
+                                        wattron(win, A_DIM);
+                                        break;
+                                    case 4:
+                                        wattron(win, A_UNDERLINE);
+                                        break;
+                                    case 5:
+                                        wattron(win, A_BLINK);
+                                        break;
+                                    case 7:
+                                        wattron(win, A_REVERSE);
+                                        break;
+                                    case 22:
+                                        wattroff(win, A_BOLD | A_DIM);
+                                        break;
+                                    case 24:
+                                        wattroff(win, A_UNDERLINE);
+                                        break;
+                                    case 25:
+                                        wattroff(win, A_BLINK);
+                                        break;
+                                    case 27:
+                                        wattroff(win, A_REVERSE);
+                                        break;
+                                    // Foreground colors (30-37,
+                                    // 90-97)
+                                    case 30:
+                                    case 31:
+                                    case 32:
+                                    case 33:
+                                    case 34:
+                                    case 35:
+                                    case 36:
+                                    case 37:
+                                        if (has_colors())
+                                        {
+                                            int colorPair =
+                                                (code - 30) + 1;
+                                            if (colorPair <=
+                                                COLOR_PAIRS)
+                                                wattron(
+                                                    win,
+                                                    COLOR_PAIR(
+                                                        colorPair));
+                                        }
+                                        break;
+                                    case 90:
+                                    case 91:
+                                    case 92:
+                                    case 93:
+                                    case 94:
+                                    case 95:
+                                    case 96:
+                                    case 97:
+                                        // Bright colors - treat as
+                                        // normal colors for now
+                                        if (has_colors())
+                                        {
+                                            int colorPair =
+                                                (code - 90) + 1;
+                                            if (colorPair <=
+                                                COLOR_PAIRS)
+                                                wattron(
+                                                    win,
+                                                    COLOR_PAIR(
+                                                        colorPair));
+                                        }
+                                        break;
+                                    case 39: // Default foreground
+                                        if (has_colors())
+                                            wattroff(win, A_COLOR);
+                                        break;
+                                }
+                                param = strtok(NULL, ";");
+                            }
+                        }
+                        break;
+                    }
+                    case 'A': // Cursor Up
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        int y, x;
+                        getyx(win, y, x);
+                        wmove(win, max(0, y - n), x);
+                        break;
+                    }
+                    case 'B': // Cursor Down
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        int y, x;
+                        getyx(win, y, x);
+                        wmove(win, y + n, x);
+                        break;
+                    }
+                    case 'C': // Cursor Forward (Right)
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        int y, x;
+                        getyx(win, y, x);
+                        wmove(win, y, x + n);
+                        break;
+                    }
+                    case 'D': // Cursor Backward (Left)
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        int y, x;
+                        getyx(win, y, x);
+                        wmove(win, y, max(0, x - n));
+                        break;
+                    }
+                    case 'H': // Cursor Position
+                    case 'f': // Horizontal and Vertical Position
+                    {
+                        int row = 1, col = 1;
+                        if (paramIdx > 0)
+                        {
+                            char* rowStr = strtok(params, ";");
+                            char* colStr = strtok(NULL, ";");
+                            if (rowStr)
+                                row = atoi(rowStr);
+                            if (colStr)
+                                col = atoi(colStr);
+                        }
+                        wmove(win, row - 1,
+                              col - 1); // Convert to 0-based
+                        break;
+                    }
+                    case 'J': // Erase in Display
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 0;
+                        switch (n)
+                        {
+                            case 0:
+                                wclrtobot(win);
+                                break; // Clear from cursor to end
+                            case 1: // Clear from start to cursor (not
+                                    // directly supported)
+                                break;
+                            case 2:
+                                wclear(win);
+                                break; // Clear entire screen
+                        }
+                        break;
+                    }
+                    case 'K': // Erase in Line
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 0;
+                        switch (n)
+                        {
+                            case 0:
+                                wclrtoeol(win);
+                                break; // Clear from cursor to end of
+                                       // line
+                            case 1:    // Clear from start of line to
+                                    // cursor (not directly supported)
+                                break;
+                            case 2: // Clear entire line
+                            {
+                                int y, x;
+                                getyx(win, y, x);
+                                wmove(win, y, 0);
+                                wclrtoeol(win);
+                                wmove(win, y, x);
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    case 'S': // Scroll Up
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        for (int j = 0; j < n; j++) wscrl(win, 1);
+                        break;
+                    }
+                    case 'T': // Scroll Down
+                    {
+                        int n = (paramIdx > 0) ? atoi(params) : 1;
+                        for (int j = 0; j < n; j++) wscrl(win, -1);
+                        break;
+                    }
+                    case 'h': // Set Mode
+                    case 'l': // Reset Mode
+                    {
+                        char* next_token = nullptr;
+                        char* token =
+                            strtok_s(params, ";", &next_token);
+                        while (token != nullptr)
+                        {
+                            if (strcmp(token, "?25") ==
+                                0) // Cursor visibility
+                            {
+                                if (command == 'h')
+                                    curs_set(1); // Show cursor
+                                else
+                                    curs_set(0); // Hide cursor
+                            }
+                            // else if (strcmp(token, "?1049") ==
+                            //          0) // Alternate screen buffer
+                            // {
+                            //     if (command == 'h')
+                            //     {
+                            //         // Switch to alternate screen
+                            //         wclear(win);
+                            //     }
+                            //     else
+                            //     {
+                            //     }
+                            // }
+                            token =
+                                strtok_s(nullptr, ";", &next_token);
+                        }
+                        break;
+                    }
+                    case 's': // Save cursor position
+                        getyx(win, consoles[activeConsole].savedCursorPosition.y,
+                              consoles[activeConsole].savedCursorPosition.x);
+                        break;
+                    case 'u': // Restore cursor position
+                        wmove(win, consoles[activeConsole].savedCursorPosition.y,
+                              consoles[activeConsole].savedCursorPosition.x);
+                        break;
+                    default:
+                        // Unknown CSI sequence - ignore
+                        break;
+                }
+            }
+            else if (ch1 == ']')
+            {
+                ansiType = ANSIType_OSC;
+                i++; // Move past ']'
+
+                // OSC sequences end with BEL (0x07) or ST (ESC \)
+                while (i < (int)len)
+                {
+                    if (str[i] == 0x07) // BEL
+                    {
+                        break;
+                    }
+                    else if (str[i] == '\x1b' && i + 1 < (int)len &&
+                             str[i + 1] == '\\')
+                    {
+                        i++; // Skip the backslash too
+                        break;
+                    }
+                    i++;
+                }
+                // OSC sequences typically handle window titles, etc.
+                // For a terminal multiplexer, we might want to ignore
+                // these or handle specific ones like setting window
+                // titles
+            }
+            else if (ch1 == 'P')
+            {
+                ansiType = ANSIType_DCS;
+                i++; // Move past 'P'
+
+                // DCS sequences end with ST (ESC \)
+                while (i < (int)len)
+                {
+                    if (str[i] == '\x1b' && i + 1 < (int)len &&
+                        str[i + 1] == '\\')
+                    {
+                        i++; // Skip the backslash too
+                        break;
+                    }
+                    i++;
+                }
+                // DCS sequences are device control strings
+                // For basic terminal emulation, we can ignore these
+            }
+            else
+            {
+                ansiType = ANSIType_Single;
+
+                // Handle single-character escape sequences
+                switch (ch1)
+                {
+                    case 'D': // Index (move cursor down one line,
+                              // scroll if at bottom)
+                    {
+                        int y, x;
+                        getyx(win, y, x);
+                        int maxy, maxx;
+                        getmaxyx(win, maxy, maxx);
+                        if (y >= maxy - 1)
+                            wscrl(win, 1);
+                        else
+                            wmove(win, y + 1, x);
+                        break;
+                    }
+                    case 'E': // Next Line (move to beginning of next
+                              // line)
+                    {
+                        int y, x;
+                        getyx(win, y, x);
+                        wmove(win, y + 1, 0);
+                        break;
+                    }
+                    case 'M': // Reverse Index (move cursor up one
+                              // line, scroll if at top)
+                    {
+                        int y, x;
+                        getyx(win, y, x);
+                        if (y <= 0)
+                            wscrl(win, -1);
+                        else
+                            wmove(win, y - 1, x);
+                        break;
+                    }
+                    case 'c': // Reset terminal
+                        wclear(win);
+                        wmove(win, 0, 0);
+                        wattrset(win, A_NORMAL);
+                        break;
+                    case '7': // Save cursor position
+                        // Would need to store position somewhere
+                        break;
+                    case '8': // Restore cursor position
+                        // Would need to restore stored position
+                        break;
+                    default:
+                        // Unknown single escape sequence - ignore
+                        break;
+                }
+            }
+        }
+        else if (ch == '\r')
+        {
+            // Carriage return - move to beginning of current line
+            int y, x;
+            getyx(win, y, x);
+            wmove(win, y, 0);
+        }
+        else if (ch == '\n')
+        {
+            // Line feed - move to next line
+            int y, x;
+            getyx(win, y, x);
+            wmove(win, y + 1, x);
+        }
+        else if (ch == '\b')
+        {
+            // Backspace - move cursor left
+            int y, x;
+            getyx(win, y, x);
+            if (x > 0)
+                wmove(win, y, x - 1);
+        }
+        else if (ch == '\t')
+        {
+            // Tab - move to next tab stop (typically every 8
+            // characters)
+            int y, x;
+            getyx(win, y, x);
+            int nextTab = ((x / 8) + 1) * 8;
+            wmove(win, y, nextTab);
+        }
+        else if (ch >= 32 || ch < 0) // Printable characters
+                                     // (including extended ASCII)
+        {
+            waddch(win, (unsigned char)ch);
+        }
+        // Control characters < 32 (except those handled above) are
+        // ignored
+    }
+}
+
 void __cdecl PipeListener(HANDLE hPipe, int consoleIndex)
 {
     const DWORD BUFF_SIZE {2048};
@@ -366,8 +805,8 @@ void __cdecl PipeListener(HANDLE hPipe, int consoleIndex)
             // Add the text without additional newlines
             move(consoles[consoleIndex].position.y,
                  consoles[consoleIndex].position.x);
-            waddstr(consoles[consoleIndex].window,
-                    CleanString(szBuffer, dwBytesRead).c_str());
+            PrintString(szBuffer, dwBytesRead,
+                        consoles[consoleIndex].window);
             wrefresh(consoles[consoleIndex].window);
 
             LeaveCriticalSection(&consoleMutex);

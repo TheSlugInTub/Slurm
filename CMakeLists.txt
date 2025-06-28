@@ -25,11 +25,12 @@ if (MSVC)
     add_compile_options(
         /Zc:__cplusplus
         /Zc:preprocessor
+        /utf-8  # Enable UTF-8 support in MSVC
     )
 endif()
 
 if(WIN32)
-    # For Windows, we'll use PDCurses (which is ncurses-compatible)
+    # For Windows, we'll use PDCurses with wide character support
     include(D:/Apps/vcpkg/scripts/buildsystems/vcpkg.cmake)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
@@ -37,7 +38,7 @@ if(WIN32)
     endif()
     
     if(NOT PDCURSES_FOUND)
-        # Try to find PDCurses manually
+        # Try to find PDCurses manually - look for wide character version first
         find_path(PDCURSES_INCLUDE_DIR 
             NAMES curses.h ncurses.h pdcurses.h
             PATHS 
@@ -50,8 +51,9 @@ if(WIN32)
                 C:/vcpkg/installed/x86-windows/include
         )
         
+        # Look for wide character libraries first
         find_library(PDCURSES_LIBRARY
-            NAMES pdcurses libpdcurses curses libcurses
+            NAMES pdcursesw libpdcursesw pdcurses libpdcurses cursesw libcursesw curses libcurses
             PATHS
                 ${CMAKE_SOURCE_DIR}/third_party/pdcurses
                 ${CMAKE_SOURCE_DIR}/deps/pdcurses
@@ -68,7 +70,7 @@ if(WIN32)
             set(CURSES_LIBRARIES ${PDCURSES_LIBRARY})
             message(STATUS "Found PDCurses: ${PDCURSES_LIBRARY}")
         else()
-            message(WARNING "PDCurses not found. Please install PDCurses or use vcpkg: vcpkg install pdcurses")
+            message(WARNING "PDCurses not found. For Unicode support, install with: vcpkg install pdcurses[wide-character]")
         endif()
     else()
         set(CURSES_FOUND TRUE)
@@ -76,23 +78,33 @@ if(WIN32)
         set(CURSES_LIBRARIES ${PDCURSES_LIBRARIES})
     endif()
 else()
-    # For UNIX systems (Linux, macOS, etc.)
+    # For UNIX systems (Linux, macOS, etc.) - prefer ncursesw
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        pkg_check_modules(NCURSES QUIET ncurses)
+        # Try ncursesw first, then fallback to ncurses
+        pkg_check_modules(NCURSESW QUIET ncursesw)
+        if(NOT NCURSESW_FOUND)
+            pkg_check_modules(NCURSES QUIET ncurses)
+        endif()
     endif()
     
-    if(NOT NCURSES_FOUND)
+    if(NCURSESW_FOUND)
+        set(CURSES_FOUND TRUE)
+        set(CURSES_INCLUDE_DIRS ${NCURSESW_INCLUDE_DIRS})
+        set(CURSES_LIBRARIES ${NCURSESW_LIBRARIES})
+        message(STATUS "Found ncursesw (wide character support)")
+    elif(NCURSES_FOUND)
+        set(CURSES_FOUND TRUE)
+        set(CURSES_INCLUDE_DIRS ${NCURSES_INCLUDE_DIRS})
+        set(CURSES_LIBRARIES ${NCURSES_LIBRARIES})
+        message(STATUS "Found ncurses (basic support)")
+    else()
         # Fallback to FindCurses module
         find_package(Curses REQUIRED)
         if(CURSES_FOUND)
             set(CURSES_INCLUDE_DIRS ${CURSES_INCLUDE_DIR})
             set(CURSES_LIBRARIES ${CURSES_LIBRARIES})
         endif()
-    else()
-        set(CURSES_FOUND TRUE)
-        set(CURSES_INCLUDE_DIRS ${NCURSES_INCLUDE_DIRS})
-        set(CURSES_LIBRARIES ${NCURSES_LIBRARIES})
     endif()
 endif()
 
@@ -114,9 +126,19 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${CURSES_LIBRARIES}
     ntdll.lib)
 
-# Add compile definitions for easier cross-platform usage
+# Add compile definitions for better Unicode support
 if(WIN32)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PDCURSES_WINCON)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE 
+        PDCURSES_WINCON
+        PDC_WIDE           # Enable wide character support in PDCurses
+        UNICODE
+        _UNICODE
+    )
+else()
+    # For Unix systems, check if we have wide character support
+    if(NCURSESW_FOUND)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE NCURSES_WIDECHAR)
+    endif()
 endif()
 
 # Print information about what was found

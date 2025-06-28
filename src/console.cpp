@@ -4,6 +4,7 @@
 #include <thread>
 #include <curses.h>
 #include <pseudoconsole.hpp>
+#include <fstream>
 
 struct Vec2
 {
@@ -42,6 +43,8 @@ const std::string statusText =
     "FOUNDATION";
 
 wchar_t szCommand[] {L"cmd.exe"};
+    
+std::ofstream file;
 
 // Fixed horizontal split function
 void CreateHorizontalSplit(int index)
@@ -50,24 +53,20 @@ void CreateHorizontalSplit(int index)
     COORD originalSize = consoles[index].size;
 
     // Resize original console to half width
-    COORD newSizeOriginal = { (SHORT)(originalSize.X / 2), originalSize.Y };
+    COORD newSizeOriginal = {(SHORT)(originalSize.X / 2),
+                             originalSize.Y};
     consoles[index].Resize(newSizeOriginal);
-    
+
     // Create new console
     consoles.push_back({});
     int newIndex = consoles.size() - 1;
 
     // Calculate new console size
-    COORD newSizeNew = { 
-        (SHORT)(originalSize.X - newSizeOriginal.X), 
-        originalSize.Y 
-    };
-    
+    COORD newSizeNew = {(SHORT)(originalSize.X - newSizeOriginal.X),
+                        originalSize.Y};
+
     // Set new console position
-    IVec2 newPos = {
-        originalPos.x + newSizeOriginal.X,
-        originalPos.y
-    };
+    IVec2 newPos = {originalPos.x + newSizeOriginal.X, originalPos.y};
 
     // Initialize and position new console
     consoles[newIndex].Initialize(szCommand);
@@ -77,20 +76,24 @@ void CreateHorizontalSplit(int index)
     activeConsole = newIndex;
 
     // Update ncurses windows
-    wresize(consoles[index].window, newSizeOriginal.Y, newSizeOriginal.X);
+    wresize(consoles[index].window, newSizeOriginal.Y,
+            newSizeOriginal.X);
     mvwin(consoles[index].window, originalPos.y, originalPos.x);
-    
-    consoles[newIndex].window = newwin(
-        newSizeNew.Y, newSizeNew.X, 
-        newPos.y, newPos.x
-    );
-    
+
+    consoles[newIndex].window =
+        newwin(newSizeNew.Y, newSizeNew.X, newPos.y, newPos.x);
+
     // Start pipe listener for new console
-    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex).detach();
+    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex)
+        .detach();
 
     // Refresh windows
     wrefresh(consoles[index].window);
     wrefresh(consoles[newIndex].window);
+    
+    file << "newPos: " << newPos.x << ", " << newPos.y << '\n';
+    file << "newSizeNew: " << newSizeNew.X << ", " << newSizeNew.Y << '\n';
+    file << "newSizeOriginal: " << newSizeOriginal.X << ", " << newSizeOriginal.Y << '\n';
 }
 
 // Fixed vertical split function
@@ -100,24 +103,20 @@ void CreateVerticalSplit(int index)
     COORD originalSize = consoles[index].size;
 
     // Resize original console to half height
-    COORD newSizeOriginal = { originalSize.X, (SHORT)(originalSize.Y / 2) };
+    COORD newSizeOriginal = {originalSize.X,
+                             (SHORT)(originalSize.Y / 2)};
     consoles[index].Resize(newSizeOriginal);
-    
+
     // Create new console
     consoles.push_back({});
     int newIndex = consoles.size() - 1;
 
     // Calculate new console size
-    COORD newSizeNew = { 
-        originalSize.X, 
-        (SHORT)(originalSize.Y - newSizeOriginal.Y) 
-    };
-    
+    COORD newSizeNew = {originalSize.X,
+                        (SHORT)(originalSize.Y - newSizeOriginal.Y)};
+
     // Set new console position (below original)
-    IVec2 newPos = {
-        originalPos.x,
-        originalPos.y + newSizeOriginal.Y
-    };
+    IVec2 newPos = {originalPos.x, originalPos.y + newSizeOriginal.Y};
 
     // Initialize and position new console
     consoles[newIndex].Initialize(szCommand);
@@ -127,20 +126,24 @@ void CreateVerticalSplit(int index)
     activeConsole = newIndex;
 
     // Update ncurses windows
-    wresize(consoles[index].window, newSizeOriginal.Y, newSizeOriginal.X);
+    wresize(consoles[index].window, newSizeOriginal.Y,
+            newSizeOriginal.X);
     mvwin(consoles[index].window, originalPos.y, originalPos.x);
-    
-    consoles[newIndex].window = newwin(
-        newSizeNew.Y, newSizeNew.X, 
-        newPos.y, newPos.x
-    );
-    
+
+    consoles[newIndex].window =
+        newwin(newSizeNew.Y, newSizeNew.X, newPos.y, newPos.x);
+
     // Start pipe listener for new console
-    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex).detach();
+    std::thread(PipeListener, consoles[newIndex].hPipeIn, newIndex)
+        .detach();
 
     // Refresh windows
     wrefresh(consoles[index].window);
     wrefresh(consoles[newIndex].window);
+
+    file << "newPos: " << newPos.x << ", " << newPos.y << '\n';
+    file << "newSizeNew: " << newSizeNew.X << ", " << newSizeNew.Y << '\n';
+    file << "newSizeOriginal: " << newSizeOriginal.X << ", " << newSizeOriginal.Y << '\n';
 }
 
 void StartProgram()
@@ -171,6 +174,8 @@ void StartProgram()
 
 int main()
 {
+    file.open("debug.txst");
+
     InitializeCriticalSection(&consoleMutex);
 
     StartProgram();
@@ -201,6 +206,8 @@ int main()
     // LeaveCriticalSection(&consoleMutex);
 
     while (1) {}
+
+    file.close();
 
     return S_OK == hr ? EXIT_SUCCESS : EXIT_FAILURE;
 }
@@ -318,15 +325,18 @@ void __cdecl InputSender(int* consoleIndexP)
     } while (key != 'q' && key != 'Q'); // Add quit condition
 }
 
-void CleanString(char* string, int len)
+std::string CleanString(char* string, int len)
 {
+    std::string str {};
     for (int i = 0; i < len; i++)
     {
-        if (string[i] == '\r')
+        if (string[i] != '\r')
         {
-            string[i] = ' ';
+            str.append(1, string[i]);
         }
     }
+
+    return str;
 }
 
 void __cdecl PipeListener(HANDLE hPipe, int consoleIndex)
@@ -353,12 +363,11 @@ void __cdecl PipeListener(HANDLE hPipe, int consoleIndex)
             // Write to ncurses screen
             EnterCriticalSection(&consoleMutex);
 
-            CleanString(szBuffer, dwBytesRead);
-
             // Add the text without additional newlines
             move(consoles[consoleIndex].position.y,
                  consoles[consoleIndex].position.x);
-            waddstr(consoles[consoleIndex].window, szBuffer);
+            waddstr(consoles[consoleIndex].window,
+                    CleanString(szBuffer, dwBytesRead).c_str());
             wrefresh(consoles[consoleIndex].window);
 
             LeaveCriticalSection(&consoleMutex);
